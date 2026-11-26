@@ -1,6 +1,7 @@
 /**
  * Valley Mail hand-in runner. Copies the adjacent game/ and screenshots/ trees
- * and writes the canonical make.fun dossier using only the Node 22 standard library.
+ * and writes the canonical make.fun dossier using only the Node standard library.
+ * Structured into sequential phases: resolve roots, validate paths, perform hand-in.
  * Run: node main.ts
  * Or: mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
  * Exports: none. Output defaults to /output; input paths never depend on the cwd.
@@ -18,6 +19,11 @@ const limits = {
   game_max_bytes: 50331648,
   game_path_max_bytes: 1000,
 };
+
+interface HandInRoots {
+  inputRoot: string;
+  outputRoot: string;
+}
 
 function isInside(parent: string, child: string): boolean {
   const path = relative(parent, child);
@@ -51,9 +57,15 @@ function copyTree(source: string, destination: string): void {
   }
 }
 
-try {
+/** Phase 1: resolve physical input root and output root safely. */
+function resolveRoots(): HandInRoots {
   const outputRoot = physicalPath(resolve(process.env.MAKEFUN_OUTPUT_DIR || '/output'));
   const inputRoot = realpathSync(sourceRoot);
+  return { inputRoot, outputRoot };
+}
+
+/** Phase 2: validate that output location does not overlap source trees. */
+function validateOutputLocation(inputRoot: string, outputRoot: string): void {
   for (const name of ['game', 'screenshots']) {
     const input = join(inputRoot, name);
     const output = join(outputRoot, name);
@@ -61,7 +73,10 @@ try {
       throw new Error('Output must not overlap the source game/ or screenshots/ directories.');
     }
   }
+}
 
+/** Phase 3: perform the hand-in with pre-flight check, tree copies, and canonical dossier. */
+function performHandIn(outputRoot: string): void {
   // Fail before changing prior output if captures are missing or limits are exceeded.
   buildDossier(sourceRoot, limits);
   mkdirSync(outputRoot, { recursive: true });
@@ -71,8 +86,19 @@ try {
     copyTree(join(sourceRoot, name), destination);
   }
   writeFileSync(join(outputRoot, 'dossier.json'), buildDossier(outputRoot, limits));
-  console.log('Hand-in written to ' + outputRoot);
-} catch (error) {
-  console.error('Valley Mail hand-in: ' + (error instanceof Error ? error.message : String(error)));
-  process.exitCode = 1;
 }
+
+/** Phase 4: entry runner orchestrating phases in order with exact error reporting. */
+function main(): void {
+  try {
+    const { inputRoot, outputRoot } = resolveRoots();
+    validateOutputLocation(inputRoot, outputRoot);
+    performHandIn(outputRoot);
+    console.log('Hand-in written to ' + outputRoot);
+  } catch (error) {
+    console.error('Valley Mail hand-in: ' + (error instanceof Error ? error.message : String(error)));
+    process.exitCode = 1;
+  }
+}
+
+main();
