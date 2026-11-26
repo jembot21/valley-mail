@@ -17,11 +17,104 @@ function isEditing(target) {
     ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName);
 }
 
+/** Tracks raw keyboard state: active holds and single-tick edge presses. */
+function createKeyStateTracker(gameKeys, { onGesture = () => {} } = {}) {
+  const held = new Set();
+  const presses = new Set();
+
+  function onKeyDown(event) {
+    if (!gameKeys.has(event.code) || isEditing(event.target) || event.isComposing) return;
+    event.preventDefault();
+    // A repeat arriving after focus loss must not resurrect a held key.
+    if (event.repeat) return;
+    if (!held.has(event.code)) {
+      held.add(event.code);
+      presses.add(event.code);
+      onGesture(event);
+    }
+  }
+
+  function onKeyUp(event) {
+    if (gameKeys.has(event.code) && !isEditing(event.target)) event.preventDefault();
+    held.delete(event.code);
+  }
+
+  function isHeld(code) {
+    return held.has(code);
+  }
+
+  function consume(code) {
+    return presses.delete(code);
+  }
+
+  function hasPress(code) {
+    return presses.has(code);
+  }
+
+  function clearPresses() {
+    presses.clear();
+  }
+
+  function reset() {
+    held.clear();
+    presses.clear();
+  }
+
+  return {
+    onKeyDown,
+    onKeyUp,
+    isHeld,
+    consume,
+    hasPress,
+    clearPresses,
+    reset,
+  };
+}
+
+/** Maps raw key state and edge presses into high-level flight/menu actions. */
+function createActionMapper(controls, keyTracker) {
+  function evaluateAxis(positive, negative) {
+    return Number(positive.some((code) => keyTracker.isHeld(code))) -
+      Number(negative.some((code) => keyTracker.isHeld(code)));
+  }
+
+  function evaluateAction(name) {
+    // Check every binding; short-circuiting would leave a second binding queued.
+    let pressed = false;
+    for (const code of controls[name]) {
+      if (keyTracker.hasPress(code)) pressed = true;
+    }
+    return pressed;
+  }
+
+  function pollFrame(mouseState, frameClicks) {
+    const frame = {
+      pitch: evaluateAxis(controls.pitchUp, controls.pitchDown),
+      bank: evaluateAxis(controls.bankRight, controls.bankLeft),
+      throttle: evaluateAxis(controls.throttleUp, controls.throttleDown),
+      gear: evaluateAction('gear'),
+      drop: evaluateAction('drop'),
+      pause: evaluateAction('pause'),
+      confirm: evaluateAction('confirm'),
+      mute: evaluateAction('mute'),
+      mouse: { ...mouseState, clicked: frameClicks.length > 0, clicks: frameClicks },
+    };
+    keyTracker.clearPresses();
+    return frame;
+  }
+
+  return {
+    evaluateAxis,
+    evaluateAction,
+    pollFrame,
+  };
+}
+
 export function createInput(canvas, { onGesture = () => {} } = {}) {
   const view = canvas.ownerDocument.defaultView;
   const document = canvas.ownerDocument;
-  const held = new Set();
-  const presses = new Set();
+  const keys = createKeyStateTracker(GAME_KEYS, { onGesture });
+  const mapper = createActionMapper(CONTROLS, keys);
   const clicks = [];
   const mouse = { x: 0, y: 0, inside: false, down: false };
   let disposed = false;
@@ -41,20 +134,11 @@ export function createInput(canvas, { onGesture = () => {} } = {}) {
   }
 
   function keyDown(event) {
-    if (!GAME_KEYS.has(event.code) || isEditing(event.target) || event.isComposing) return;
-    event.preventDefault();
-    // A repeat arriving after focus loss must not resurrect a held key.
-    if (event.repeat) return;
-    if (!held.has(event.code)) {
-      held.add(event.code);
-      presses.add(event.code);
-      onGesture(event);
-    }
+    keys.onKeyDown(event);
   }
 
   function keyUp(event) {
-    if (GAME_KEYS.has(event.code) && !isEditing(event.target)) event.preventDefault();
-    held.delete(event.code);
+    keys.onKeyUp(event);
   }
 
   function mouseDown(event) {
@@ -78,8 +162,7 @@ export function createInput(canvas, { onGesture = () => {} } = {}) {
   }
 
   function reset() {
-    held.clear();
-    presses.clear();
+    keys.reset();
     clicks.length = 0;
     mouse.down = false;
     mouse.inside = false;
@@ -89,39 +172,9 @@ export function createInput(canvas, { onGesture = () => {} } = {}) {
     if (document.hidden) reset();
   }
 
-  function consumePress(code) {
-    return presses.delete(code);
-  }
-
-  function axis(positive, negative) {
-    return Number(positive.some((code) => held.has(code))) -
-      Number(negative.some((code) => held.has(code)));
-  }
-
-  function action(name) {
-    // Check every binding; short-circuiting would leave a second binding queued.
-    let pressed = false;
-    for (const code of CONTROLS[name]) {
-      if (presses.has(code)) pressed = true;
-    }
-    return pressed;
-  }
-
   function poll() {
     const frameClicks = clicks.splice(0);
-    const frame = {
-      pitch: axis(CONTROLS.pitchUp, CONTROLS.pitchDown),
-      bank: axis(CONTROLS.bankRight, CONTROLS.bankLeft),
-      throttle: axis(CONTROLS.throttleUp, CONTROLS.throttleDown),
-      gear: action('gear'),
-      drop: action('drop'),
-      pause: action('pause'),
-      confirm: action('confirm'),
-      mute: action('mute'),
-      mouse: { ...mouse, clicked: frameClicks.length > 0, clicks: frameClicks },
-    };
-    presses.clear();
-    return frame;
+    return mapper.pollFrame(mouse, frameClicks);
   }
 
   view.addEventListener('keydown', keyDown);
@@ -147,5 +200,11 @@ export function createInput(canvas, { onGesture = () => {} } = {}) {
     reset();
   }
 
-  return Object.freeze({ poll, isHeld: (code) => held.has(code), consumePress, reset, dispose });
+  return Object.freeze({
+    poll,
+    isHeld: (code) => keys.isHeld(code),
+    consumePress: (code) => keys.consume(code),
+    reset,
+    dispose,
+  });
 }

@@ -146,43 +146,57 @@ function rectangle(feature, left, right, back, front, lift = 0) {
   ];
 }
 
-function drawSky(ctx, camera, palette, dusk) {
+function drawSkyGradient(ctx, palette) {
   const sky = ctx.createLinearGradient(0, 0, 0, HEIGHT * 0.76);
   sky.addColorStop(0, palette.sky.top);
   sky.addColorStop(0.62, palette.sky.horizon);
   sky.addColorStop(1, palette.sky.horizon);
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
+}
 
+function drawSun(ctx, camera, palette, dusk) {
   // A fixed world bearing lets the sun travel out of frame when the pilot turns.
   const sun = project(camera, {
     x: camera.x - 18000, y: camera.y + (dusk ? 4000 : 6600), z: camera.z + 35000,
   });
-  if (sun && sun.x > -120 && sun.x < WIDTH + 120 && sun.y > -120 && sun.y < HEIGHT) {
-    const radius = dusk ? 24 : 19;
-    const glow = ctx.createRadialGradient(sun.x, sun.y, radius, sun.x, sun.y, radius * 4.5);
-    glow.addColorStop(0, palette.sky.horizon);
-    glow.addColorStop(1, 'rgba(255,225,175,0)');
-    ctx.save();
-    ctx.globalAlpha = 0.45;
-    ctx.fillStyle = glow;
-    ctx.fillRect(sun.x - 110, sun.y - 110, 220, 220);
-    ctx.globalAlpha = 0.95;
-    ctx.fillStyle = mix(palette.ringCore, palette.sky.horizon, dusk ? 0.28 : 0.12);
-    ctx.beginPath();
-    ctx.arc(sun.x, sun.y, radius, 0, TAU);
-    ctx.fill();
-    ctx.restore();
-  }
+  if (!sun || sun.x <= -120 || sun.x >= WIDTH + 120 || sun.y <= -120 || sun.y >= HEIGHT) return;
+
+  const radius = dusk ? 24 : 19;
+  const glow = ctx.createRadialGradient(sun.x, sun.y, radius, sun.x, sun.y, radius * 4.5);
+  glow.addColorStop(0, palette.sky.horizon);
+  glow.addColorStop(1, 'rgba(255,225,175,0)');
+  ctx.save();
+  ctx.globalAlpha = 0.45;
+  ctx.fillStyle = glow;
+  ctx.fillRect(sun.x - 110, sun.y - 110, 220, 220);
+  ctx.globalAlpha = 0.95;
+  ctx.fillStyle = mix(palette.ringCore, palette.sky.horizon, dusk ? 0.28 : 0.12);
+  ctx.beginPath();
+  ctx.arc(sun.x, sun.y, radius, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawHorizon(ctx, palette) {
   ctx.fillStyle = mix(palette.fields[0], palette.sky.horizon, 0.48);
   ctx.fillRect(0, HORIZON, WIDTH, HEIGHT - HORIZON);
 }
 
-function drawTerrain(ctx, scene, world) {
-  const step = WORLD.terrainSegmentLengthMeters;
-  const from = Math.floor((scene.camera.z - WORLD.viewDistanceMeters) / step) * step;
-  const to = scene.camera.z + WORLD.viewDistanceMeters;
-  const half = WORLD.valleyWidthMeters / 2;
+function drawSky(ctx, camera, palette, dusk) {
+  drawSkyGradient(ctx, palette);
+  drawSun(ctx, camera, palette, dusk);
+  drawHorizon(ctx, palette);
+}
+
+/** Align a view-distance Z window to regular terrain segment steps. */
+function segmentRange(cameraZ, distance, step) {
+  const from = Math.floor((cameraZ - distance) / step) * step;
+  const to = cameraZ + distance;
+  return { from, to };
+}
+
+function addValleyFloor(scene, world, from, to, step, half) {
   const offsets = [-6000, -2000, -1100, -760, -half, 0, half, 760, 1100, 2000, 6000];
   const row = z => offsets.map(offset => {
     const x = world.riverCenter(z) + offset;
@@ -198,7 +212,9 @@ function drawTerrain(ctx, scene, world) {
     }
     previous = current;
   }
+}
 
+function addRidgeRibbons(scene, world, from, to, step, half) {
   // Six world-anchored ribbons, rather than a screen-space mountain wallpaper:
   // separate lateral distances produce parallax during both travel and turns.
   for (let layer = 0; layer < 3; layer++) {
@@ -223,6 +239,14 @@ function drawTerrain(ctx, scene, world) {
       }
     }
   }
+}
+
+function drawTerrain(ctx, scene, world) {
+  const step = WORLD.terrainSegmentLengthMeters;
+  const { from, to } = segmentRange(scene.camera.z, WORLD.viewDistanceMeters, step);
+  const half = WORLD.valleyWidthMeters / 2;
+  addValleyFloor(scene, world, from, to, step, half);
+  addRidgeRibbons(scene, world, from, to, step, half);
   paintItems(ctx, scene);
 }
 
@@ -241,8 +265,7 @@ function addFields(scene, fields) {
 
 function addRiver(scene, world) {
   const step = WORLD.terrainSegmentLengthMeters / 2;
-  const from = Math.floor((scene.camera.z - WORLD.viewDistanceMeters) / step) * step;
-  const to = scene.camera.z + WORLD.viewDistanceMeters;
+  const { from, to } = segmentRange(scene.camera.z, WORLD.viewDistanceMeters, step);
   const half = WORLD.riverWidthMeters / 2;
   for (let z = from; z < to; z += step) {
     const a = world.riverCenter(z);
@@ -258,32 +281,44 @@ function addRiver(scene, world) {
   }
 }
 
+function addRunwayBed(scene, strip, width, length) {
+  for (let back = -length / 2; back < length / 2; back += 40) {
+    const front = Math.min(back + 40, length / 2);
+    addFace(scene, rectangle(strip, -width / 2 - 3, width / 2 + 3, back, front, 0.18), scene.palette.fields[1]);
+    addFace(scene, rectangle(strip, -width / 2, width / 2, back, front, 0.2), scene.palette.runway);
+  }
+}
+
+function addRunwayThresholds(scene, strip, width, length) {
+  for (const end of [-1, 1]) {
+    const z = end * (length / 2 - 22);
+    for (const fraction of [-0.33, -0.16, 0.16, 0.33]) {
+      const x = fraction * width;
+      addFace(scene, rectangle(strip, x - 1.1, x + 1.1, z - 7, z + 7, 0.24), scene.palette.runwayMarkings);
+    }
+    addFace(scene, rectangle(strip, -width * 0.43, width * 0.43,
+      end * (length / 2 - 10) - 1, end * (length / 2 - 10) + 1, 0.25), scene.palette.runwayMarkings);
+    for (const side of [-1, 1]) {
+      const tip = localPoint(strip, side * width * 0.6, 1.8, end * length / 2);
+      addFace(scene, [localPoint(strip, side * width * 0.6 - 1, 0.2, end * length / 2),
+        localPoint(strip, side * width * 0.6 + 1, 0.2, end * length / 2), tip], scene.palette.aircraftTrim);
+    }
+  }
+}
+
+function addRunwayCenterline(scene, strip, length) {
+  for (let z = -length / 2 + 65; z < length / 2 - 35; z += 50) {
+    addFace(scene, rectangle(strip, -0.65, 0.65, z, z + 15, 0.26), scene.palette.runwayMarkings);
+  }
+}
+
 function addStrips(scene, strips) {
   for (const strip of strips) {
     const width = strip.width ?? WORLD.runwayWidthMeters;
     const length = strip.length ?? WORLD.runwayLengthMeters;
-    for (let back = -length / 2; back < length / 2; back += 40) {
-      const front = Math.min(back + 40, length / 2);
-      addFace(scene, rectangle(strip, -width / 2 - 3, width / 2 + 3, back, front, 0.18), scene.palette.fields[1]);
-      addFace(scene, rectangle(strip, -width / 2, width / 2, back, front, 0.2), scene.palette.runway);
-    }
-    for (const end of [-1, 1]) {
-      const z = end * (length / 2 - 22);
-      for (const fraction of [-0.33, -0.16, 0.16, 0.33]) {
-        const x = fraction * width;
-        addFace(scene, rectangle(strip, x - 1.1, x + 1.1, z - 7, z + 7, 0.24), scene.palette.runwayMarkings);
-      }
-      addFace(scene, rectangle(strip, -width * 0.43, width * 0.43,
-        end * (length / 2 - 10) - 1, end * (length / 2 - 10) + 1, 0.25), scene.palette.runwayMarkings);
-      for (const side of [-1, 1]) {
-        const tip = localPoint(strip, side * width * 0.6, 1.8, end * length / 2);
-        addFace(scene, [localPoint(strip, side * width * 0.6 - 1, 0.2, end * length / 2),
-          localPoint(strip, side * width * 0.6 + 1, 0.2, end * length / 2), tip], scene.palette.aircraftTrim);
-      }
-    }
-    for (let z = -length / 2 + 65; z < length / 2 - 35; z += 50) {
-      addFace(scene, rectangle(strip, -0.65, 0.65, z, z + 15, 0.26), scene.palette.runwayMarkings);
-    }
+    addRunwayBed(scene, strip, width, length);
+    addRunwayThresholds(scene, strip, width, length);
+    addRunwayCenterline(scene, strip, length);
   }
 }
 
@@ -539,30 +574,7 @@ function aircraftPoint(plane, x, y, z) {
   return localPoint(plane, bx, py + 1.6, pz);
 }
 
-function addAircraft(scene, plane, seconds) {
-  const palette = scene.palette;
-  const edge = mix(palette.aircraftTrim, palette.ridges[2], 0.42);
-  const metal = mix(palette.runwayMarkings, palette.ridges[2], 0.4);
-  const tyre = mix(palette.ridges[2], '#11151b', 0.9);
-  const point = (x, y, z) => aircraftPoint(plane, x, y, z);
-  const face = (vertices, colour, options = {}) => addFace(scene,
-    vertices.map(vertex => point(...vertex)), colour, { haze: false, ...options });
-  const line = (vertices, colour, metres = 0.055, alpha = 1) => {
-    const points = vertices.map(vertex => point(...vertex));
-    const depth = toView(scene.camera, points[0]).z;
-    addWorldLine(scene, points, colour, clamp(metres * FOCAL / Math.max(NEAR, depth), 0.55, 4), alpha);
-  };
-  const prism = (outline, bottom, top, colour) => {
-    face(outline.map(([x, z]) => [x, top, z]), colour, { stroke: edge, lineWidth: 0.65 });
-    face(outline.map(([x, z]) => [x, bottom, z]), mix(colour, palette.ridges[2], 0.23));
-    for (let i = 0; i < outline.length; i++) {
-      const a = outline[i];
-      const b = outline[(i + 1) % outline.length];
-      face([[a[0], bottom, a[1]], [b[0], bottom, b[1]], [b[0], top, b[1]], [a[0], top, a[1]]],
-        mix(colour, palette.ridges[2], 0.16), { stroke: edge, lineWidth: 0.5 });
-    }
-  };
-
+function addAircraftFuselage(palette, edge, face) {
   // A tapered, faceted fuselage has actual volume from every bank and pitch,
   // rather than a flat aircraft icon rotated over the world.
   const sections = [
@@ -585,7 +597,9 @@ function addAircraft(scene, plane, seconds) {
   }
   face(Array.from({ length: 10 }, (_, i) => sectionPoint(sections[sections.length - 1], i / 10 * TAU)),
     mix(palette.aircraftTrim, palette.ridges[2], 0.24));
+}
 
+function addAircraftCanopy(palette, metal, face, line) {
   const glass = mix(palette.sky.top, palette.ridges[2], 0.54);
   for (const side of [-1, 1]) {
     face([[side * 0.53, 1.95, -1.1], [side * 0.62, 1.94, 0.95],
@@ -599,7 +613,9 @@ function addAircraft(scene, plane, seconds) {
     glass, { stroke: metal, lineWidth: 0.85 });
   face([[-0.48, 2.48, 0.57], [0.48, 2.48, 0.57], [0.55, 1.99, 1.27], [-0.55, 1.99, 1.27]],
     mix(glass, palette.riverHighlight, 0.2), { stroke: metal, lineWidth: 0.8 });
+}
 
+function addAircraftWingsAndFin(palette, edge, metal, prism, face, line) {
   prism([[-5.5, -0.68], [-5.5, 0.58], [-4.9, 1.02], [4.9, 1.02], [5.5, 0.58], [5.5, -0.68]],
     2.55, 2.7, palette.aircraft);
   for (const side of [-1, 1]) {
@@ -620,33 +636,35 @@ function addAircraft(scene, plane, seconds) {
       { stroke: edge, lineWidth: 0.8 });
     line([[side * 0.08, 1.21, -4.08], [side * 0.08, 2.33, -3.97]], palette.aircraft, 0.045);
   }
+}
 
-  if (plane.gearDown) {
-    const wheel = (x, y, z, radius, thickness) => {
-      const circumference = (offset, r) => Array.from({ length: 12 }, (_, i) => {
-        const a = i / 12 * TAU;
-        return [x + offset, y + Math.cos(a) * r, z + Math.sin(a) * r];
-      });
-      for (const side of [-1, 1]) {
-        face(circumference(side * thickness / 2, radius), tyre, { stroke: edge, lineWidth: 0.4 });
-        face(circumference(side * (thickness / 2 + 0.01), radius * 0.3), metal);
-      }
-      const a = circumference(-thickness / 2, radius);
-      const b = circumference(thickness / 2, radius);
-      for (let i = 0; i < 12; i++) {
-        const next = (i + 1) % 12;
-        face([a[i], b[i], b[next], a[next]], tyre);
-      }
-    };
+function addAircraftLandingGear(palette, edge, metal, tyre, face, line) {
+  const wheel = (x, y, z, radius, thickness) => {
+    const circumference = (offset, r) => Array.from({ length: 12 }, (_, i) => {
+      const a = i / 12 * TAU;
+      return [x + offset, y + Math.cos(a) * r, z + Math.sin(a) * r];
+    });
     for (const side of [-1, 1]) {
-      line([[side * 0.5, 1.23, 0.35], [side * 1.17, 0.43, 0.28]], palette.aircraftTrim, 0.12);
-      line([[side * 0.45, 1.2, -0.65], [side * 1.17, 0.43, 0.28]], metal, 0.07);
-      wheel(side * 1.2, 0.43, 0.28, 0.43, 0.25);
+      face(circumference(side * thickness / 2, radius), tyre, { stroke: edge, lineWidth: 0.4 });
+      face(circumference(side * (thickness / 2 + 0.01), radius * 0.3), metal);
     }
-    line([[0, 0.75, -4.05], [0, 0.22, -4.15]], metal, 0.08);
-    wheel(0, 0.22, -4.15, 0.22, 0.14);
+    const a = circumference(-thickness / 2, radius);
+    const b = circumference(thickness / 2, radius);
+    for (let i = 0; i < 12; i++) {
+      const next = (i + 1) % 12;
+      face([a[i], b[i], b[next], a[next]], tyre);
+    }
+  };
+  for (const side of [-1, 1]) {
+    line([[side * 0.5, 1.23, 0.35], [side * 1.17, 0.43, 0.28]], palette.aircraftTrim, 0.12);
+    line([[side * 0.45, 1.2, -0.65], [side * 1.17, 0.43, 0.28]], metal, 0.07);
+    wheel(side * 1.2, 0.43, 0.28, 0.43, 0.25);
   }
+  line([[0, 0.75, -4.05], [0, 0.22, -4.15]], metal, 0.08);
+  wheel(0, 0.22, -4.15, 0.22, 0.14);
+}
 
+function addAircraftPropeller(palette, metal, face, plane, seconds) {
   const powered = plane.fuel > 0 && !plane.crashed;
   const throttle = clamp(plane.throttle, 0, 1);
   const phase = powered ? seconds * (22 + throttle * 64) : 0.4;
@@ -671,6 +689,39 @@ function addAircraft(scene, plane, seconds) {
   for (let i = 0; i < hub.length; i++) {
     face([hub[i], hub[(i + 1) % hub.length], [0, 1.62, 3.62]], palette.aircraftTrim);
   }
+}
+
+function addAircraft(scene, plane, seconds) {
+  const palette = scene.palette;
+  const edge = mix(palette.aircraftTrim, palette.ridges[2], 0.42);
+  const metal = mix(palette.runwayMarkings, palette.ridges[2], 0.4);
+  const tyre = mix(palette.ridges[2], '#11151b', 0.9);
+  const point = (x, y, z) => aircraftPoint(plane, x, y, z);
+  const face = (vertices, colour, options = {}) => addFace(scene,
+    vertices.map(vertex => point(...vertex)), colour, { haze: false, ...options });
+  const line = (vertices, colour, metres = 0.055, alpha = 1) => {
+    const points = vertices.map(vertex => point(...vertex));
+    const depth = toView(scene.camera, points[0]).z;
+    addWorldLine(scene, points, colour, clamp(metres * FOCAL / Math.max(NEAR, depth), 0.55, 4), alpha);
+  };
+  const prism = (outline, bottom, top, colour) => {
+    face(outline.map(([x, z]) => [x, top, z]), colour, { stroke: edge, lineWidth: 0.65 });
+    face(outline.map(([x, z]) => [x, bottom, z]), mix(colour, palette.ridges[2], 0.23));
+    for (let i = 0; i < outline.length; i++) {
+      const a = outline[i];
+      const b = outline[(i + 1) % outline.length];
+      face([[a[0], bottom, a[1]], [b[0], bottom, b[1]], [b[0], top, b[1]], [a[0], top, a[1]]],
+        mix(colour, palette.ridges[2], 0.16), { stroke: edge, lineWidth: 0.5 });
+    }
+  };
+
+  addAircraftFuselage(palette, edge, face);
+  addAircraftCanopy(palette, metal, face, line);
+  addAircraftWingsAndFin(palette, edge, metal, prism, face, line);
+  if (plane.gearDown) {
+    addAircraftLandingGear(palette, edge, metal, tyre, face, line);
+  }
+  addAircraftPropeller(palette, metal, face, plane, seconds);
 }
 
 function addParcelTarget(scene, world, run, seconds) {

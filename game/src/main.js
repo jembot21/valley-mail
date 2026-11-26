@@ -293,25 +293,30 @@ function boot() {
     if (hasNextSortie()) button('Title', 850, 550, 240, 62, returnToTitle);
   }
 
-  function stepFlight(controls) {
-    const previous = {
+  function captureFlightSnapshot() {
+    return {
       rings: ringsHit(),
       hull: plane.hull,
       gear: plane.gearDown,
       stalled: plane.stalled,
       parcel: parcelPhase(),
     };
-    messageTTL = Math.max(0, messageTTL - STEP);
-    if (!messageTTL) message = '';
+  }
 
+  function updateMessageTTL(dt) {
+    messageTTL = Math.max(0, messageTTL - dt);
+    if (!messageTTL) message = '';
+  }
+
+  function consumeTickInput(controls) {
     // A press survives a render without a simulation step, then fires on one tick.
     const tickInput = { ...controls, gear: pendingGear, drop: pendingDrop, pause: false, confirm: false };
     pendingGear = false;
     pendingDrop = false;
-    stepPlane(plane, tickInput, world, STEP);
-    stepRun(run, plane, tickInput, STEP);
-    updateAudio(true);
+    return tickInput;
+  }
 
+  function processFlightEvents(previous) {
     if (plane.gearDown !== previous.gear) announce(`Landing gear ${plane.gearDown ? 'down' : 'up'}.`);
     const threaded = ringsHit() - previous.rings;
     if (threaded > 0) {
@@ -336,12 +341,25 @@ function boot() {
       lowFuelWarned = true;
       announce('Low fuel · find a safe landing.', 4);
     }
+  }
 
+  function checkFlightCompletion() {
     // Free Flight landings are practice; only a terminal failure ends the run.
     if (!isFreeFlight() || plane.crashed || plane.fuel <= 0 || plane.hull <= 0) {
       const result = finishRun(run, plane);
       if (result) showScoreCard(result);
     }
+  }
+
+  function stepFlight(controls) {
+    const previous = captureFlightSnapshot();
+    updateMessageTTL(STEP);
+    const tickInput = consumeTickInput(controls);
+    stepPlane(plane, tickInput, world, STEP);
+    stepRun(run, plane, tickInput, STEP);
+    updateAudio(true);
+    processFlightEvents(previous);
+    checkFlightCompletion();
   }
 
   function advanceFlight(dt, controls) {
@@ -487,10 +505,7 @@ function boot() {
 
   let mouse = { x: -1, y: -1, inside: false };
 
-  function frame(timestamp) {
-    if (disposed) return;
-    const dt = previousTime === null ? 0 : Math.min(MAX_FRAME, Math.max(0, (timestamp - previousTime) / 1000));
-    previousTime = timestamp;
+  function pollFrameInputs() {
     const up = input.consumePress('ArrowUp');
     const down = input.consumePress('ArrowDown');
     const escape = input.consumePress('Escape');
@@ -502,8 +517,11 @@ function boot() {
     mouse = designPoint(rawMouse);
     const clicks = Array.isArray(rawMouse.clicks) && rawMouse.clicks.length
       ? rawMouse.clicks.map(designPoint) : mouse.clicked ? [mouse] : [];
-    const screenAtFrameStart = screen;
+    return { up, down, escape, number, controls, clicks };
+  }
 
+  function updateScreenState(inputs, dt) {
+    const { up, down, escape, number, controls } = inputs;
     if (screen === 'title') {
       if (up || down) selection = (selection + (down ? 1 : -1) + OPTIONS.length) % OPTIONS.length;
       if (number >= 0) chooseSortie(number);
@@ -523,7 +541,9 @@ function boot() {
       if (escape) returnToTitle();
       else if (controls.confirm) continueFromScore();
     }
+  }
 
+  function renderActiveScreen(dt) {
     ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     buttons = [];
     if (screen === 'title' || screen === 'briefing') {
@@ -535,12 +555,27 @@ function boot() {
       if (screen === 'paused') drawPause();
       else if (screen === 'score') drawScoreCard();
     }
+  }
+
+  function dispatchButtonClicks(clicks, screenAtFrameStart) {
     // A keyboard transition cannot also click through into the newly drawn screen.
     if (clicks.length && screen === screenAtFrameStart) {
       const hit = clicks.map(point => buttons.find(({ x, y, width, height }) => point.x >= x && point.x <= x + width
         && point.y >= y && point.y <= y + height)).find(Boolean);
       if (hit) hit.action();
     }
+  }
+
+  function frame(timestamp) {
+    if (disposed) return;
+    const dt = previousTime === null ? 0 : Math.min(MAX_FRAME, Math.max(0, (timestamp - previousTime) / 1000));
+    previousTime = timestamp;
+
+    const inputs = pollFrameInputs();
+    const screenAtFrameStart = screen;
+    updateScreenState(inputs, dt);
+    renderActiveScreen(dt);
+    dispatchButtonClicks(inputs.clicks, screenAtFrameStart);
     frameID = requestAnimationFrame(frame);
   }
 

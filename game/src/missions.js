@@ -32,7 +32,35 @@ import { SCORING, WORLD, PALETTES, FUEL } from './config.js';
 import { createWorld, createRings } from './world.js';
 import { createPlane } from './plane.js';
 
-export const SORTIES = Object.freeze([
+/** Constructs an immutable, normalized sortie definition record. */
+function buildSortieDefinition({
+  id,
+  name,
+  briefing,
+  palette = 'day',
+  ringCount,
+  fuelLoad = 1,
+  requiresParcelDrop = false,
+  parTimeSeconds = 0,
+  seedOffset = 0,
+  endless = false,
+}) {
+  return Object.freeze({
+    id,
+    name,
+    briefing,
+    palette,
+    ringCount,
+    fuelLoad,
+    requiresParcelDrop,
+    parTimeSeconds,
+    seedOffset,
+    endless,
+  });
+}
+
+/** Canonical sortie table declaring campaign sorties and endless flight. */
+const SORTIE_DEFINITIONS = [
   {
     id: 1,
     name: 'First Post',
@@ -81,7 +109,9 @@ export const SORTIES = Object.freeze([
     seedOffset: 3301,
     endless: true,
   },
-].map((sortie) => Object.freeze(sortie)));
+];
+
+export const SORTIES = Object.freeze(SORTIE_DEFINITIONS.map(buildSortieDefinition));
 
 export const FREE_FLIGHT = SORTIES[SORTIES.length - 1];
 
@@ -315,42 +345,49 @@ export function stepRun(run, plane, input, dt) {
  * Endless flight can stop and take off again while fuel remains, without a win.
  * Scores retain full precision; screens may round them for display.
  */
-export function finishRun(run, plane) {
-  if (run.finished) return run.scoreCard;
-  if (!plane.landed && !plane.crashed && plane.hull > 0) return null;
-
+/** Determine the terminal outcome and explanatory reason for an ended run. */
+function determineRunOutcome(run, plane) {
   const destroyed = plane.hull <= 0;
   const empty = plane.fuel <= FUEL.empty;
   const cargoReady = !run.sortie.requiresParcelDrop || run.parcel.status === 'hit';
   const atDestination = plane.groundStripId === run.world.destination.id;
-  let outcome;
-  let reason;
+
   if (destroyed) {
-    outcome = 'hull destroyed';
-    reason = plane.crashReason || 'No hull integrity remains.';
-  } else if (plane.crashed) {
-    outcome = empty ? 'out of fuel' : 'crashed';
-    reason = plane.crashReason || (empty ? 'The fuel tank is empty.' : 'The aircraft crashed.');
-  } else if (run.sortie.endless) {
+    return { outcome: 'hull destroyed', reason: plane.crashReason || 'No hull integrity remains.' };
+  }
+  if (plane.crashed) {
+    return {
+      outcome: empty ? 'out of fuel' : 'crashed',
+      reason: plane.crashReason || (empty ? 'The fuel tank is empty.' : 'The aircraft crashed.'),
+    };
+  }
+  if (run.sortie.endless) {
     if (!empty) return null;
-    outcome = 'out of fuel';
-    reason = 'Free flight ended with an empty tank.';
-  } else if (atDestination && cargoReady) {
-    outcome = 'delivered';
-    reason = run.sortie.requiresParcelDrop ? 'Mail and parcel delivered.' : 'Mail delivered.';
-  } else if (empty) {
-    outcome = 'out of fuel';
-    reason = 'Fuel exhausted before the delivery was complete.';
-  } else {
-    outcome = 'crashed';
-    reason = !atDestination
+    return { outcome: 'out of fuel', reason: 'Free flight ended with an empty tank.' };
+  }
+  if (atDestination && cargoReady) {
+    return {
+      outcome: 'delivered',
+      reason: run.sortie.requiresParcelDrop ? 'Mail and parcel delivered.' : 'Mail delivered.',
+    };
+  }
+  if (empty) {
+    return { outcome: 'out of fuel', reason: 'Fuel exhausted before the delivery was complete.' };
+  }
+  return {
+    outcome: 'crashed',
+    reason: !atDestination
       ? 'Mail was not delivered: land at the destination airstrip.'
       : run.parcel.status === 'missed'
         ? 'The parcel missed the village drop zone.'
-        : 'The parcel had not reached the village drop zone before landing.';
-  }
+        : 'The parcel had not reached the village drop zone before landing.',
+  };
+}
 
+/** Tally the final score card for a finished run. */
+function buildScoreCard(run, plane, { outcome, reason }) {
   updateSubtotal(run, plane);
+  const destroyed = plane.hull <= 0;
   const safeLanding = plane.landed && !plane.crashed && !destroyed;
   // Use the grade recorded at touchdown, not the now-level plane on the runway.
   const grade = safeLanding
@@ -358,7 +395,8 @@ export function finishRun(run, plane) {
   const landingBonus = safeLanding ? (grade?.bonus ?? plane.landingBonus ?? 0) : 0;
   const timeBonus = Math.max(0, run.sortie.parTimeSeconds - run.elapsedSeconds)
     * SCORING.timeBonusPerSecondRemaining;
-  run.scoreCard = Object.freeze({
+
+  return Object.freeze({
     outcome,
     reason,
     ringsHit: run.ringsHit,
@@ -370,6 +408,16 @@ export function finishRun(run, plane) {
     score: run.score + (outcome === 'delivered' ? SCORING.mailDeliveryBonus : 0)
       + landingBonus + timeBonus - run.damageTaken * SCORING.damagePenaltyPerPoint,
   });
+}
+
+export function finishRun(run, plane) {
+  if (run.finished) return run.scoreCard;
+  if (!plane.landed && !plane.crashed && plane.hull > 0) return null;
+
+  const terminal = determineRunOutcome(run, plane);
+  if (!terminal) return null;
+
+  run.scoreCard = buildScoreCard(run, plane, terminal);
   run.finished = true;
   return run.scoreCard;
 }

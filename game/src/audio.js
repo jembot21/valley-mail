@@ -17,6 +17,57 @@ import { AUDIO, CONTROLS, FLIGHT } from './config.js';
 
 const clamp01 = (value) => Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 
+/** Create a gain node with an initial value and optional connection. */
+function createGainNode(ctx, initialGain, destination = null) {
+  const node = ctx.createGain();
+  node.gain.value = initialGain;
+  if (destination) node.connect(destination);
+  return node;
+}
+
+/** Create an oscillator node with a type, frequency and optional connection. */
+function createOscillatorNode(ctx, type, frequency, destination = null) {
+  const osc = ctx.createOscillator();
+  osc.type = type;
+  osc.frequency.value = frequency;
+  if (destination) osc.connect(destination);
+  return osc;
+}
+
+/** Create an attack-decay gain envelope for a scheduled one-shot voice. */
+function createVoiceEnvelope(ctx, { start, attackSeconds, end, peakGain, floorGain = AUDIO.envelopeFloor, destination = null }) {
+  const envelope = ctx.createGain();
+  envelope.gain.setValueAtTime(0, ctx.currentTime);
+  envelope.gain.setValueAtTime(floorGain, start);
+  envelope.gain.linearRampToValueAtTime(peakGain, start + attackSeconds);
+  envelope.gain.exponentialRampToValueAtTime(floorGain, end);
+  if (destination) envelope.connect(destination);
+  return envelope;
+}
+
+/** Build a pitch-ramped oscillator source connected to an envelope. */
+function createTonedVoiceSource(ctx, { type = 'sine', hz, endHz = hz, start, end, destination }) {
+  const source = ctx.createOscillator();
+  source.type = type;
+  source.frequency.setValueAtTime(hz, start);
+  source.frequency.exponentialRampToValueAtTime(endHz, end);
+  source.connect(destination);
+  return { source, nodes: [source] };
+}
+
+/** Build a lowpass-filtered noise buffer source connected to an envelope. */
+function createFilteredNoiseVoiceSource(ctx, buffer, { lowpassHz, destination }) {
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = lowpassHz;
+  filter.Q.value = 0;
+  source.connect(filter);
+  filter.connect(destination);
+  return { source, nodes: [source, filter] };
+}
+
 export function createAudio({ eventTarget = globalThis.window, bindKeys = true } = {}) {
   let context = null;
   let graph = null;
@@ -63,20 +114,10 @@ export function createAudio({ eventTarget = globalThis.window, bindKeys = true }
     mean /= samples.length;
     for (let i = 0; i < samples.length; i++) samples[i] -= mean;
 
-    const engine = ctx.createOscillator();
-    engine.type = 'sine';
-    engine.frequency.value = AUDIO.engine.idleHz;
-    const harmonic = ctx.createOscillator();
-    harmonic.type = 'triangle';
-    harmonic.frequency.value = AUDIO.engine.idleHz * AUDIO.engine.harmonicRatio;
-    const harmonicGain = ctx.createGain();
-    harmonicGain.gain.value = AUDIO.engine.harmonicGain;
-    const engineGain = ctx.createGain();
-    engineGain.gain.value = 0;
-    engine.connect(engineGain);
-    harmonic.connect(harmonicGain);
-    harmonicGain.connect(engineGain);
-    engineGain.connect(master);
+    const engineGain = createGainNode(ctx, 0, master);
+    const harmonicGain = createGainNode(ctx, AUDIO.engine.harmonicGain, engineGain);
+    const engine = createOscillatorNode(ctx, 'sine', AUDIO.engine.idleHz, engineGain);
+    const harmonic = createOscillatorNode(ctx, 'triangle', AUDIO.engine.idleHz * AUDIO.engine.harmonicRatio, harmonicGain);
 
     const wind = ctx.createBufferSource();
     wind.buffer = buffer;
@@ -89,27 +130,15 @@ export function createAudio({ eventTarget = globalThis.window, bindKeys = true }
     windLowpass.type = 'lowpass';
     windLowpass.frequency.value = AUDIO.wind.idleLowpassHz;
     windLowpass.Q.value = 0;
-    const windGain = ctx.createGain();
-    windGain.gain.value = 0;
+    const windGain = createGainNode(ctx, 0, master);
     wind.connect(windHighpass);
     windHighpass.connect(windLowpass);
     windLowpass.connect(windGain);
-    windGain.connect(master);
 
-    const warning = ctx.createOscillator();
-    warning.type = 'sine';
-    warning.frequency.value = AUDIO.stall.frequencyHz;
-    const warble = ctx.createOscillator();
-    warble.type = 'sine';
-    warble.frequency.value = AUDIO.stall.warbleHz;
-    const warbleDepth = ctx.createGain();
-    warbleDepth.gain.value = AUDIO.stall.warbleDepthHz;
-    const warningGain = ctx.createGain();
-    warningGain.gain.value = 0;
-    warble.connect(warbleDepth);
-    warbleDepth.connect(warning.frequency);
-    warning.connect(warningGain);
-    warningGain.connect(master);
+    const warningGain = createGainNode(ctx, 0, master);
+    const warning = createOscillatorNode(ctx, 'sine', AUDIO.stall.frequencyHz, warningGain);
+    const warbleDepth = createGainNode(ctx, AUDIO.stall.warbleDepthHz, warning.frequency);
+    const warble = createOscillatorNode(ctx, 'sine', AUDIO.stall.warbleHz, warbleDepth);
 
     const sources = [engine, harmonic, wind, warning, warble];
     const nodes = [...sources, master, compressor, clip, harmonicGain, engineGain,
@@ -195,43 +224,35 @@ export function createAudio({ eventTarget = globalThis.window, bindKeys = true }
     for (const node of voice.nodes) node.disconnect();
   }
 
-  function playVoice({ hz, endHz = hz, duration, attackSeconds, gain, at = 0, noiseHz = null }) {
-    if (!canPlay()) return;
+  function reclaimExpiredVoices() {
     // End times reclaim voices even when onended is delayed by a busy main thread.
     for (const voice of voices) {
       if (voice.end <= context.currentTime) releaseVoice(voice);
     }
+  }
+
+  function playVoice({ hz, endHz = hz, duration, attackSeconds, gain, at = 0, noiseHz = null }) {
+    if (!canPlay()) return;
+    reclaimExpiredVoices();
     if (voices.size >= AUDIO.maxEffectVoices) return;
-    const source = noiseHz === null ? context.createOscillator() : context.createBufferSource();
-    const envelope = context.createGain();
     const start = context.currentTime + at;
     const end = start + duration;
-    const nodes = [source, envelope];
-    if (noiseHz === null) {
-      source.type = 'sine';
-      source.frequency.setValueAtTime(hz, start);
-      source.frequency.exponentialRampToValueAtTime(endHz, end);
-      source.connect(envelope);
-    } else {
-      source.buffer = graph.buffer;
-      const filter = context.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.value = noiseHz;
-      filter.Q.value = 0;
-      source.connect(filter);
-      filter.connect(envelope);
-      nodes.push(filter);
-    }
-    envelope.gain.setValueAtTime(0, context.currentTime);
-    envelope.gain.setValueAtTime(AUDIO.envelopeFloor, start);
-    envelope.gain.linearRampToValueAtTime(gain, start + attackSeconds);
-    envelope.gain.exponentialRampToValueAtTime(AUDIO.envelopeFloor, end);
-    envelope.connect(graph.master);
-    const voice = { source, nodes, end };
+    const envelope = createVoiceEnvelope(context, {
+      start,
+      attackSeconds,
+      end,
+      peakGain: gain,
+      destination: graph.master,
+    });
+    const sound = noiseHz === null
+      ? createTonedVoiceSource(context, { hz, endHz, start, end, destination: envelope })
+      : createFilteredNoiseVoiceSource(context, graph.buffer, { lowpassHz: noiseHz, destination: envelope });
+    const nodes = [...sound.nodes, envelope];
+    const voice = { source: sound.source, nodes, end };
     voices.add(voice);
-    source.onended = () => releaseVoice(voice);
-    source.start(start);
-    source.stop(end);
+    sound.source.onended = () => releaseVoice(voice);
+    sound.source.start(start);
+    sound.source.stop(end);
   }
 
   function melody(cue) {
