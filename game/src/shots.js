@@ -39,77 +39,83 @@ function setFlight(plane, world, state) {
 }
 
 function composeCover(world, plane) {
+  // Mid-flight over the village bend at moderate altitude
+  // Bridge, church tower and houses in frame below; two rings (R3, R4) ahead along the river
   const target = world.rings[3];
-  const z = target.position.z - 320;
+  const z = 1680;
+  const x = world.riverCenter(z);
   const position = {
-    x: world.riverCenter(z),
-    y: target.position.y + 20,
+    x,
+    y: 78,
     z,
   };
   setFlight(plane, world, {
     position,
-    heading: headingTo(position, target.position, 18),
-    pitch: 2,
-    bank: -8,
-    airspeedKnots: 90,
-    throttle: 0.72,
-    fuel: 78,
+    heading: headingTo(position, target.position, -2),
+    pitch: 1.5,
+    bank: -6,
+    airspeedKnots: 88,
+    throttle: 0.70,
+    fuel: 76,
   });
   return { passedRings: 3, elapsedSeconds: 58, message: null };
 }
 
 function composeRing(world, plane) {
-  const ring = world.rings[0];
+  // Threading Ring 1 (z=1480): river and village curving below, next ring (Ring 2 at z=1840) visible beyond
+  const ring = world.rings[1];
+  const nextRing = world.rings[2];
   setFlight(plane, world, {
-    // The upper half of the opening keeps the crossed hoop in the chase view.
-    position: { ...ring.position, y: ring.position.y + 12 },
-    heading: ring.heading,
-    pitch: 1,
-    bank: 4,
+    position: { x: ring.position.x, y: ring.position.y + 6, z: ring.position.z },
+    heading: headingTo(ring.position, nextRing.position, -3),
+    pitch: 1.2,
+    bank: -8,
     airspeedKnots: 92,
-    throttle: 0.74,
-    fuel: 84,
+    throttle: 0.75,
+    fuel: 82,
   });
   return { passedRings: 1, elapsedSeconds: 24, message: 'RING +100' };
 }
 
 function composeApproach(world, plane) {
+  // Final approach to destination airstrip: runway ahead with threshold markings, windsock and approach lights
   const strip = world.destination;
   const x = strip.position.x;
-  const z = strip.bounds.minZ - 8;
+  const z = strip.bounds.minZ - 150;
   setFlight(plane, world, {
-    // Close to the threshold, the runway widens across the lower chase view.
-    position: { x, y: world.groundHeight(x, z) + 8, z },
+    position: { x, y: world.groundHeight(x, z) + 24, z },
     heading: strip.heading,
-    pitch: 2,
+    pitch: 2.8,
     bank: 0,
-    airspeedKnots: 49,
-    verticalSpeed: -1.2,
-    throttle: 0.28,
+    airspeedKnots: 52,
+    verticalSpeed: -1.5,
+    throttle: 0.32,
     gearDown: true,
-    fuel: 56,
+    fuel: 54,
   });
-  return { passedRings: world.rings.length, elapsedSeconds: 96, message: 'GEAR DOWN' };
+  return { passedRings: world.rings.length, elapsedSeconds: 98, message: 'GEAR DOWN' };
 }
 
 function composeDusk(world, plane) {
-  const target = world.rings[4];
-  const z = target.position.z - 280;
+  // Dusk sortie: village windows glowing amber below, strip edge lights on in the valley, instruments lit
+  const target = world.rings[3];
+  const z = 1980;
+  const x = world.riverCenter(z);
   const position = {
-    x: world.riverCenter(z),
-    y: target.position.y + 16,
+    x,
+    y: 75,
     z,
   };
   setFlight(plane, world, {
     position,
-    heading: headingTo(position, target.position, -4),
-    pitch: 1,
-    bank: 6,
-    airspeedKnots: 86,
+    heading: headingTo(position, target.position, 0),
+    pitch: 1.5,
+    bank: -3,
+    airspeedKnots: 84,
     throttle: 0.68,
     fuel: 48,
   });
-  return { passedRings: 4, elapsedSeconds: 82, message: null };
+  return { passedRings: 3, elapsedSeconds: 78, message: null };
 }
 
 const SCENES = {

@@ -227,33 +227,81 @@ export function createWorld({ seed = WORLD.seed, ringCount = DEFAULT_RING_COUNT,
   const treeClusters = [];
   const houses = [];
   const villages = [];
-  const villageRandom = seededRandom(seed ^ 0xa511e9b3);
   const villageZ = Math.max(FIRST_RING_Z + WORLD.fieldPatchLengthMeters,
-    (FIRST_RING_Z + lastRingZ) / 2);
-  const villageLength = WORLD.fieldPatchLengthMeters;
-  const villageBank = villageRandom() < 1 / 2 ? -1 : 1;
-  const [villageLeft, villageRight] = bankInterval(villageZ - villageLength / 2,
-    villageZ + villageLength / 2, villageBank);
-  const villageWidth = Math.min(WORLD.fieldPatchLengthMeters, villageRight - villageLeft);
-  const villageX = (villageLeft + villageRight) / 2;
+    Math.round(((FIRST_RING_Z + lastRingZ) / 2) / WORLD.fieldPatchLengthMeters) * WORLD.fieldPatchLengthMeters);
+  const villageBank = 1;
+  const villageLength = 240;
+  const villageWidth = 120;
+  const villageX = -40;
   const villageBounds = rectangleBounds(villageX, villageZ, villageWidth, villageLength);
-  const houseColumns = Math.max(1, Math.floor(villageWidth / (FLIGHT.wingspanMeters * 3)));
-  const houseRows = Math.max(1, Math.floor(villageLength / (FLIGHT.wingspanMeters * 3)));
-  for (let row = 0; row < houseRows; row++) {
-    for (let column = 0; column < houseColumns; column++) {
-      const x = villageBounds.minX + (column + 1 / 2) * villageWidth / houseColumns;
-      const z = villageBounds.minZ + (row + 1 / 2) * villageLength / houseRows;
-      const width = FLIGHT.wingspanMeters * (3 / 4 + villageRandom() / 2);
-      const length = FLIGHT.wingspanMeters * (1 + villageRandom() / 2);
-      const bounds = rectangleBounds(x, z, width, length);
-      if (overlapsClearing(bounds)) continue;
-      houses.push(freezeData({ id: `village-house-${row}-${column}`, type: 'house', villageId: 'village',
-        position: { x, y: groundHeight(x, z), z }, heading: 0, width, length,
-        height: FLIGHT.wingspanMeters * (1 / 2 + villageRandom() / 4),
-        roofHeight: FLIGHT.wingspanMeters / 4, bounds, corners: corners(bounds, groundHeight),
-        wallColour: colours.runwayMarkings, roofColour: colours.aircraftTrim }));
-    }
+
+  // Village layout: 14 houses along main street, 1 church near riverbank, 1 water tower.
+  const wallColours = ['#f5f0db', '#faf9f5', '#f6ecc2', '#fdfbf2', '#f5edd0', '#f9f6e8', '#f6ebc4'];
+  const roofColours = ['#c25a3f', '#556270', '#9a4235', '#b64d32', '#4b5563', '#883025', '#be543a'];
+
+  // Church near the riverbank on the west side of the village
+  const churchX = -68;
+  const churchZ = villageZ - 40;
+  const churchNaveBounds = rectangleBounds(churchX, churchZ + 6, 10, 18);
+  houses.push(freezeData({
+    id: 'village-church', type: 'church', villageId: 'village',
+    position: { x: churchX, y: groundHeight(churchX, churchZ + 6), z: churchZ + 6 },
+    heading: 0, width: 10, length: 18, height: 8.5, roofHeight: 4.5,
+    towerWidth: 6, towerLength: 6, towerHeight: 22, spireHeight: 10,
+    bounds: rectangleBounds(churchX, churchZ, 12, 26),
+    corners: corners(churchNaveBounds, groundHeight),
+    wallColour: '#fdfefe', roofColour: '#4a5563', spireColour: '#282e38',
+  }));
+
+  // Small water tower on village edge
+  const wtX = -18;
+  const wtZ = villageZ + 95;
+  const wtBounds = rectangleBounds(wtX, wtZ, 6, 6);
+  houses.push(freezeData({
+    id: 'village-water-tower', type: 'waterTower', villageId: 'village',
+    position: { x: wtX, y: groundHeight(wtX, wtZ), z: wtZ },
+    heading: 0, width: 5.5, length: 5.5, height: 12.5, roofHeight: 2.5,
+    tankRadius: 2.5, tankHeight: 4, stiltsHeight: 8,
+    bounds: wtBounds, corners: corners(wtBounds, groundHeight),
+    wallColour: '#746252', roofColour: '#505a63',
+  }));
+
+  // Fourteen houses: 7 west of main street (facing east), 7 east of main street (facing west)
+  const westHouseZ = [-88, -66, -12, 12, 36, 60, 84];
+  const eastHouseZ = [-86, -62, -36, -8, 18, 44, 72];
+  for (let i = 0; i < 7; i++) {
+    const x = -58;
+    const z = villageZ + westHouseZ[i];
+    const width = 9.5 + (i % 3) * 0.8;
+    const length = 13 + ((i * 2) % 3) * 1.1;
+    const height = 6.2 + (i % 2) * 0.8;
+    const roofHeight = 2.8 + (i % 3) * 0.3;
+    const bounds = rectangleBounds(x, z, width, length);
+    houses.push(freezeData({
+      id: `village-house-w-${i}`, type: 'house', villageId: 'village',
+      position: { x, y: groundHeight(x, z), z }, heading: 90, width, length,
+      height, roofHeight, bounds, corners: corners(bounds, groundHeight),
+      wallColour: wallColours[i % wallColours.length],
+      roofColour: roofColours[i % roofColours.length],
+    }));
   }
+  for (let i = 0; i < 7; i++) {
+    const x = -22;
+    const z = villageZ + eastHouseZ[i];
+    const width = 9.8 + ((i + 1) % 3) * 0.7;
+    const length = 13.2 + ((i + 2) % 3) * 0.9;
+    const height = 6.4 + ((i + 1) % 2) * 0.7;
+    const roofHeight = 2.9 + ((i + 1) % 3) * 0.3;
+    const bounds = rectangleBounds(x, z, width, length);
+    houses.push(freezeData({
+      id: `village-house-e-${i}`, type: 'house', villageId: 'village',
+      position: { x, y: groundHeight(x, z), z }, heading: -90, width, length,
+      height, roofHeight, bounds, corners: corners(bounds, groundHeight),
+      wallColour: wallColours[(i + 3) % wallColours.length],
+      roofColour: roofColours[(i + 2) % roofColours.length],
+    }));
+  }
+
   villages.push(freezeData({ id: 'village', type: 'village', bank: villageBank,
     position: { x: villageX, y: groundHeight(villageX, villageZ), z: villageZ },
     width: villageWidth, length: villageLength, bounds: villageBounds, houses: [...houses] }));
@@ -316,13 +364,213 @@ export function createWorld({ seed = WORLD.seed, ringCount = DEFAULT_RING_COUNT,
     }
   }
 
+  // Denser nature: two-tone pine clusters along riverbanks
+  const pineRandom = seededRandom(seed ^ 0x48a5e12d);
+  for (let z = route.startZ - 200; z <= route.endZ + 200; z += 140) {
+    for (const bank of [-1, 1]) {
+      const offsetX = bank * (HALF_RIVER + 8 + (pineRandom() * 12));
+      const treeX = riverCenter(z) + offsetX;
+      const bounds = rectangleBounds(treeX, z, 10, 10);
+      if (overlapsClearing(bounds) || intersects(bounds, villageBounds)) continue;
+      const count = 2 + Math.floor(pineRandom() * 3);
+      const clusterTrees = [];
+      for (let i = 0; i < count; i++) {
+        const angle = pineRandom() * TAU;
+        const dist = pineRandom() * 6;
+        const tx = treeX + Math.cos(angle) * dist;
+        const tz = z + Math.sin(angle) * dist;
+        const crownRadius = 3.2 + pineRandom() * 1.6;
+        const height = 12 + pineRandom() * 6;
+        const tree = freezeData({
+          id: `river-pine-${z}-${bank}-${i}`, type: 'tree', clusterId: `river-pines-${z}-${bank}`,
+          position: { x: tx, y: groundHeight(tx, tz), z: tz },
+          height, crownRadius, pine: true, twoTone: true,
+          bounds: rectangleBounds(tx, tz, crownRadius * 2, crownRadius * 2),
+          colour: '#355c45',
+        });
+        clusterTrees.push(tree);
+        trees.push(tree);
+      }
+      treeClusters.push(freezeData({
+        id: `river-pines-${z}-${bank}`, type: 'treeCluster', bank,
+        position: { x: treeX, y: groundHeight(treeX, z), z }, radius: 10,
+        bounds: rectangleBounds(treeX, z, 20, 20), trees: clusterTrees,
+      }));
+    }
+  }
+
+  // Lower slope pine clusters
+  for (let z = route.startZ; z <= route.endZ; z += 180) {
+    for (const bank of [-1, 1]) {
+      const slopeDist = HALF_VALLEY + 35 + pineRandom() * 75;
+      const slopeX = riverCenter(z) + bank * slopeDist;
+      const bounds = rectangleBounds(slopeX, z, 14, 14);
+      if (overlapsClearing(bounds)) continue;
+      const count = 3 + Math.floor(pineRandom() * 3);
+      const clusterTrees = [];
+      for (let i = 0; i < count; i++) {
+        const tx = slopeX + (pineRandom() - 0.5) * 12;
+        const tz = z + (pineRandom() - 0.5) * 12;
+        const crownRadius = 3.5 + pineRandom() * 1.5;
+        const height = 13 + pineRandom() * 5;
+        const tree = freezeData({
+          id: `slope-pine-${z}-${bank}-${i}`, type: 'tree', clusterId: `slope-pines-${z}-${bank}`,
+          position: { x: tx, y: groundHeight(tx, tz), z: tz },
+          height, crownRadius, pine: true, twoTone: true,
+          bounds: rectangleBounds(tx, tz, crownRadius * 2, crownRadius * 2),
+          colour: '#2f523d',
+        });
+        clusterTrees.push(tree);
+        trees.push(tree);
+      }
+      treeClusters.push(freezeData({
+        id: `slope-pines-${z}-${bank}`, type: 'treeCluster', bank,
+        position: { x: slopeX, y: groundHeight(slopeX, z), z }, radius: 14,
+        bounds: rectangleBounds(slopeX, z, 28, 28), trees: clusterTrees,
+      }));
+    }
+  }
+
+  // Small still pond off the river in western valley floor
+  const pondZ = 1760;
+  const pondX = 55;
+  const ponds = [freezeData({
+    id: 'valley-pond', type: 'pond',
+    position: { x: pondX, y: 0.08, z: pondZ },
+    radiusX: 22, radiusZ: 36,
+    bounds: rectangleBounds(pondX, pondZ, 50, 78),
+  })];
+
+  // Round gold hay bales in two fields
+  const hayBales = [];
+  const hayField1Z = 2240;
+  const hayField1X = riverCenter(hayField1Z) - 130;
+  const hay1Offsets = [
+    [-14, -18, 0.4], [8, -12, 1.2], [-6, 2, -0.6], [16, 10, 0.1],
+    [-18, 16, 1.8], [6, 22, -1.1],
+  ];
+  hay1Offsets.forEach(([dx, dz, rot], idx) => {
+    const x = hayField1X + dx;
+    const z = hayField1Z + dz;
+    hayBales.push(freezeData({
+      id: `hay-bale-1-${idx}`, type: 'hayBale',
+      position: { x, y: groundHeight(x, z) + 0.9, z },
+      heading: rot * 57.3, radius: 0.9, length: 1.8,
+      bounds: rectangleBounds(x, z, 3, 3),
+      colour: '#e0b542', shadeColour: '#b38a29',
+    }));
+  });
+  const hayField2Z = 2760;
+  const hayField2X = riverCenter(hayField2Z) + 125;
+  const hay2Offsets = [
+    [-12, -16, 0.2], [10, -10, -0.9], [-4, 4, 1.4], [14, 12, -0.3],
+    [-15, 18, 0.8], [8, 24, 2.1],
+  ];
+  hay2Offsets.forEach(([dx, dz, rot], idx) => {
+    const x = hayField2X + dx;
+    const z = hayField2Z + dz;
+    hayBales.push(freezeData({
+      id: `hay-bale-2-${idx}`, type: 'hayBale',
+      position: { x, y: groundHeight(x, z) + 0.9, z },
+      heading: rot * 57.3, radius: 0.9, length: 1.8,
+      bounds: rectangleBounds(x, z, 3, 3),
+      colour: '#dfb240', shadeColour: '#b08726',
+    }));
+  });
+
+  // Windmill on eastern ridge shoulder above the village
+  const windmillZ = villageZ - 20;
+  const windmillX = 295;
+  const windmillY = groundHeight(windmillX, windmillZ);
+  const landmarks = [freezeData({
+    id: 'ridge-windmill', type: 'windmill',
+    position: { x: windmillX, y: windmillY, z: windmillZ },
+    heading: -75, towerRadius: 4.5, towerHeight: 14, capHeight: 3.5,
+    bladeLength: 10.5, bounds: rectangleBounds(windmillX, windmillZ, 26, 26),
+  })];
+
+  // Stone arch bridge across the river at the village
+  const bridgeZ = villageZ - 40;
+  const bridgeRiverX = riverCenter(bridgeZ);
+  const bridgeWestX = bridgeRiverX - HALF_RIVER - 4;
+  const bridgeEastX = bridgeRiverX + HALF_RIVER + 4;
+  const bridges = [freezeData({
+    id: 'village-bridge', type: 'bridge',
+    position: { x: bridgeRiverX, y: 0, z: bridgeZ },
+    westX: bridgeWestX, eastX: bridgeEastX, z: bridgeZ,
+    deckWidth: 6, deckHeight: 2.8,
+    bounds: rectangleBounds(bridgeRiverX, bridgeZ, WORLD.riverWidthMeters + 20, 16),
+  })];
+
+  // Dirt road waypoints & segments
+  const roads = [];
+  const roadWaypoints = [];
+  roadWaypoints.push({ x: -290, z: 320 });
+  for (let z = 400; z <= bridgeZ - 40; z += 80) {
+    roadWaypoints.push({ x: riverCenter(z) - HALF_RIVER - 26, z });
+  }
+  roadWaypoints.push({ x: bridgeWestX, z: bridgeZ });
+  roadWaypoints.push({ x: bridgeEastX, z: bridgeZ });
+  roadWaypoints.push({ x: villageX, z: bridgeZ });
+  roadWaypoints.push({ x: villageX, z: villageZ - 90 });
+  roadWaypoints.push({ x: villageX, z: villageZ + 90 });
+  for (let z = villageZ + 140; z <= route.endZ + 200; z += 80) {
+    roadWaypoints.push({ x: riverCenter(z) + HALF_RIVER + 26, z });
+  }
+  for (let i = 0; i < roadWaypoints.length - 1; i++) {
+    const a = roadWaypoints[i];
+    const b = roadWaypoints[i + 1];
+    const minX = Math.min(a.x, b.x) - 4;
+    const maxX = Math.max(a.x, b.x) + 4;
+    const minZ = Math.min(a.z, b.z) - 2;
+    const maxZ = Math.max(a.z, b.z) + 2;
+    roads.push(freezeData({
+      id: `road-segment-${i}`, type: 'road',
+      from: { x: a.x, y: groundHeight(a.x, a.z) + 0.12, z: a.z },
+      to: { x: b.x, y: groundHeight(b.x, b.z) + 0.12, z: b.z },
+      width: 5.5, bounds: { minX, maxX, minZ, maxZ },
+    }));
+  }
+
+  // Simple post-and-rail fence lines along fields beside the road
+  const fences = [];
+  for (let z = 1200; z <= 2240; z += 120) {
+    const fromX = riverCenter(z) - HALF_RIVER - 31;
+    const toX = riverCenter(z + 120) - HALF_RIVER - 31;
+    fences.push(freezeData({
+      id: `fence-w-${z}`, type: 'fence',
+      from: { x: fromX, y: groundHeight(fromX, z), z },
+      to: { x: toX, y: groundHeight(toX, z + 120), z: z + 120 },
+      bounds: { minX: Math.min(fromX, toX) - 2, maxX: Math.max(fromX, toX) + 2, minZ: z, maxZ: z + 120 },
+    }));
+  }
+  for (let z = 2720; z <= 3680; z += 120) {
+    const fromX = riverCenter(z) + HALF_RIVER + 31;
+    const toX = riverCenter(z + 120) + HALF_RIVER + 31;
+    fences.push(freezeData({
+      id: `fence-e-${z}`, type: 'fence',
+      from: { x: fromX, y: groundHeight(fromX, z), z },
+      to: { x: toX, y: groundHeight(toX, z + 120), z: z + 120 },
+      bounds: { minX: Math.min(fromX, toX) - 2, maxX: Math.max(fromX, toX) + 2, minZ: z, maxZ: z + 120 },
+    }));
+  }
+
+  // 4 soft flat drifting clouds
+  const clouds = freezeData([
+    { id: 'cloud-0', baseZ: 1200, xOffset: -60, width: 280, length: 180, altitude: 620, speed: 6 },
+    { id: 'cloud-1', baseZ: 2450, xOffset: 80, width: 330, length: 210, altitude: 670, speed: 7 },
+    { id: 'cloud-2', baseZ: 3750, xOffset: -40, width: 300, length: 190, altitude: 640, speed: 6.5 },
+    { id: 'cloud-3', baseZ: 5050, xOffset: 70, width: 270, length: 170, altitude: 610, speed: 7.2 },
+  ]);
+
   const world = { seed, paletteName: palette, palette: colours, ringCount, route, sceneryExtent,
     departure: airstrips[0], destination: airstrips[1], airstrips,
     village: villages[0], villages, fields, trees, treeClusters, houses, rings: [],
+    ponds, hayBales, landmarks, bridges, roads, fences, clouds,
     riverCenter, riverHeading, distanceToRiver, groundHeight, clearance, airstripAt,
     featuresInWindow, featuresAhead };
   world.rings = Object.freeze(createRings(world));
-  for (const list of [airstrips, villages, fields, trees, treeClusters, houses]) {
+  for (const list of [airstrips, villages, fields, trees, treeClusters, houses, ponds, hayBales, landmarks, bridges, roads, fences]) {
     list.sort((a, b) => a.bounds.minZ - b.bounds.minZ || a.bounds.minX - b.bounds.minX);
     Object.freeze(list);
   }
@@ -334,7 +582,9 @@ export function createWorld({ seed = WORLD.seed, ringCount = DEFAULT_RING_COUNT,
     const visible = (list) => list.filter(({ bounds }) => bounds.minZ <= toZ && bounds.maxZ >= fromZ);
     return { fields: visible(fields), trees: visible(trees), treeClusters: visible(treeClusters),
       houses: visible(houses), villages: visible(villages), airstrips: visible(airstrips),
-      rings: visible(world.rings) };
+      rings: visible(world.rings), ponds: visible(ponds), hayBales: visible(hayBales),
+      landmarks: visible(landmarks), bridges: visible(bridges), roads: visible(roads),
+      fences: visible(fences), clouds };
   }
 
   function featuresAhead(z, distance = WORLD.viewDistanceMeters) {

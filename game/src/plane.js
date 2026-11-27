@@ -20,8 +20,16 @@
  * toggles once per step. Low power/negative throttle input applies ground brakes.
  * The caller handles pause, confirm, drop, mute and mouse, and supplies dt in
  * seconds only while playing. Nonpositive/nonfinite dt is a no-op.
+ * CHASE_CAMERA defines the close, solid chase-view framing parameters.
  */
 import { UNITS, FLIGHT, FUEL, DAMAGE, SCORING, WORLD } from './config.js';
+
+/** Chase camera framing parameters for the enlarged aircraft presence. */
+export const CHASE_CAMERA = Object.freeze({
+  distanceMeters: 21.0,
+  elevationMeters: 8.0,
+  groundClearanceMeters: 4.8,
+});
 
 /** Create a fresh aircraft near the departure strip's -z end, ready to taxi. */
 export function createPlane(world) {
