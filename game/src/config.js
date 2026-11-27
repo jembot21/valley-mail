@@ -181,7 +181,7 @@ export const AUDIO = freezeData({
   },
 });
 
-export const SHOT_NAMES = freezeData(['cover', 'ring', 'approach', 'dusk']);
+export const SHOT_NAMES = freezeData(['cover', 'ring', 'approach', 'dusk', 'title', 'gorge', 'upgrade']);
 
 /** Read location.search by default; pass a query string for tools/tests. Unknown shots return null. */
 export function readShotName(search = globalThis.location?.search ?? '') {

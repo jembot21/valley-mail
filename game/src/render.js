@@ -6,6 +6,8 @@
  */
 import { CANVAS, WORLD, PALETTES } from './config.js';
 import { CHASE_CAMERA } from './plane.js';
+import { drawWeatherLayer } from './weather.js';
+import { drawObstacles } from './obstacles.js';
 
 const { width: WIDTH, height: HEIGHT } = CANVAS;
 const RAD = Math.PI / 180;
@@ -1645,9 +1647,11 @@ export function draw(ctx, world, plane, run) {
     addRings(scene, run, seconds, dusk);
     addParcelTarget(scene, world, run, seconds);
     addFallingParcel(scene, world, run?.parcel, seconds);
+    drawObstacles(ctx, world.obstacles ?? run?.obstacles, (pt) => project(camera, pt), palette, seconds);
     addAircraft(scene, plane, seconds);
     paintItems(ctx, scene);
     drawRingGuide(ctx, scene, run, seconds);
+    drawWeatherLayer(ctx, run?.weather ?? world.weather, camera, palette);
   } finally {
     ctx.restore();
   }

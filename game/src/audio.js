@@ -320,9 +320,50 @@ export function createAudio({ eventTarget = globalThis.window, bindKeys = true }
     }
   }
 
+  function comboChime(level = 1) {
+    if (!canPlay()) return;
+    const semitones = Math.min(12, (level - 1) * 2);
+    const pitchFactor = 2 ** (semitones / 12);
+    const notes = [
+      { hz: 587.33 * pitchFactor, at: 0, duration: 0.18 },
+      { hz: 880.00 * pitchFactor, at: 0.07, duration: 0.22 },
+      { hz: 1174.66 * pitchFactor, at: 0.14, duration: 0.28 },
+    ];
+    for (const note of notes) {
+      playVoice({ ...note, attackSeconds: 0.01, gain: 0.11 });
+    }
+  }
+
+  function upgradePurchased() {
+    if (!canPlay()) return;
+    playVoice({ hz: 440, endHz: 660, at: 0, duration: 0.15, attackSeconds: 0.008, gain: 0.14 });
+    playVoice({ hz: 880, at: 0.12, duration: 0.25, attackSeconds: 0.01, gain: 0.16 });
+  }
+
+  function thunderRumble() {
+    if (!canPlay()) return;
+    playVoice({ hz: 65, endHz: 32, duration: 1.4, attackSeconds: 0.05, gain: 0.16, noiseHz: 220 });
+  }
+
+  function windGust(intensity = 0.5) {
+    if (!canPlay()) return;
+    const gain = clamp01(intensity) * 0.12;
+    playVoice({ hz: 120, endHz: 80, duration: 0.8, attackSeconds: 0.2, gain, noiseHz: 600 });
+  }
+
+  function gearToggle(down = true) {
+    if (!canPlay()) return;
+    playVoice({ hz: down ? 180 : 260, endHz: down ? 90 : 180, duration: 0.14, attackSeconds: 0.005, gain: 0.12, noiseHz: 400 });
+  }
+
   return Object.freeze({
     unlock, update,
     ring: () => melody(AUDIO.ring),
+    comboChime,
+    upgradePurchased,
+    thunderRumble,
+    windGust,
+    gearToggle,
     touchdown: (severity = 0.5) => impact(AUDIO.touchdown, severity),
     damage: (severity = 1) => impact(AUDIO.damage, severity),
     stall,

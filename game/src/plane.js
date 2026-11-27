@@ -114,6 +114,7 @@ function crashPlane(plane, reason) {
 
 /** Capture impact values before the ground roll flattens the aircraft. */
 function touchDown(plane, strip) {
+  const maxHull = plane._maxHull ?? DAMAGE.maxHull;
   const sink = Math.max(0, -plane.verticalSpeed);
   const bank = Math.abs(plane.bank);
   const overspeed = Math.max(0, plane.airspeedKnots - DAMAGE.maxLandingSpeedKnots);
@@ -140,7 +141,7 @@ function touchDown(plane, strip) {
   plane.justTouchedDown = true;
   plane.onGround = true;
   plane.groundStripId = strip?.id ?? null;
-  plane.hull = clamp(plane.hull - damage, 0, DAMAGE.maxHull);
+  plane.hull = clamp(plane.hull - damage, 0, maxHull);
   plane.landingGrade = null;
   plane.landingLabel = null;
   plane.landingBonus = 0;
@@ -170,13 +171,20 @@ function touchDown(plane, strip) {
 
 function advancePlane(plane, controls, world, dt) {
   const strip = world.airstripAt(plane.position.x, plane.position.z);
+  const fuelCapacity = plane._fuelCapacity ?? FUEL.capacity;
+  const maxHull = plane._maxHull ?? DAMAGE.maxHull;
+  const stallSpeed = plane._stallSpeedKnots ?? FLIGHT.stallSpeedKnots;
+  const maxSpeed = plane._maxSpeedKnots ?? FLIGHT.maxSpeedKnots;
+  const acceleration = plane._accelerationKnots ?? FLIGHT.accelerationKnotsPerSecond;
+  const maxClimb = plane._maxClimbRate ?? FLIGHT.maxClimbMetersPerSecond;
+
   plane.throttle = plane.fuel > FUEL.empty
     ? clamp(plane.throttle + controls.throttle * FLIGHT.throttleResponsePerSecond * dt, 0, 1)
     : 0;
   const burn = FUEL.idleBurnPerSecond
     + (FUEL.fullThrottleBurnPerSecond - FUEL.idleBurnPerSecond)
     * plane.throttle ** FUEL.throttleBurnExponent;
-  plane.fuel = clamp(plane.fuel - burn * dt, FUEL.empty, FUEL.capacity);
+  plane.fuel = clamp(plane.fuel - burn * dt, FUEL.empty, fuelCapacity);
   if (plane.fuel === FUEL.empty) plane.throttle = 0;
 
   plane.pitch = clamp(plane.pitch + controls.pitch * FLIGHT.pitchRateDegreesPerSecond * dt,
@@ -201,11 +209,11 @@ function advancePlane(plane, controls, world, dt) {
     && (controls.throttle < 0 || plane.throttle < FLIGHT.initialThrottle / 2);
   // Pulling power back also brakes; suppress thrust so it reliably slows a roll.
   const thrust = plane.onGround && controls.throttle < 0 ? 0
-    : plane.throttle * FLIGHT.accelerationKnotsPerSecond;
+    : plane.throttle * acceleration;
   plane.airspeedKnots = clamp(plane.airspeedKnots
     + (thrust - drag - turnDrag - climbDrag
       - (braking ? FLIGHT.groundBrakeKnotsPerSecond : 0)) * dt,
-  0, FLIGHT.maxSpeedKnots);
+  0, maxSpeed);
 
   const bankRadians = plane.bank * UNITS.degreesToRadians;
   // Coordinated turns tighten at low speed; the stall threshold bounds the rate.
@@ -213,19 +221,19 @@ function advancePlane(plane, controls, world, dt) {
     ? controls.bank * FLIGHT.turnRateDegreesPerSecond * Math.min(1, speedRatio)
     : FLIGHT.turnRateDegreesPerSecond * Math.tan(bankRadians)
       / Math.tan(FLIGHT.turnReferenceBankDegrees * UNITS.degreesToRadians)
-      * FLIGHT.cruiseSpeedKnots / Math.max(plane.airspeedKnots, FLIGHT.stallSpeedKnots);
+      * FLIGHT.cruiseSpeedKnots / Math.max(plane.airspeedKnots, stallSpeed);
   plane.heading = ((plane.heading + turnRate * dt) % 360 + 360) % 360;
 
-  plane.stalled = !plane.onGround && plane.airspeedKnots < FLIGHT.stallSpeedKnots;
+  plane.stalled = !plane.onGround && plane.airspeedKnots < stallSpeed;
   if (plane.stalled) {
     plane.pitch = clamp(plane.pitch - FLIGHT.stallNoseDropDegreesPerSecond * dt,
       -FLIGHT.maxPitchDownDegrees, FLIGHT.maxPitchUpDegrees);
   }
   const metersPerSecond = plane.airspeedKnots * UNITS.knotsToMetersPerSecond;
   let targetClimb = clamp(metersPerSecond * Math.sin(plane.pitch * UNITS.degreesToRadians)
-    * Math.cos(bankRadians), -FLIGHT.maxDescentMetersPerSecond, FLIGHT.maxClimbMetersPerSecond);
+    * Math.cos(bankRadians), -FLIGHT.maxDescentMetersPerSecond, maxClimb);
   if (plane.stalled) {
-    const severity = 1 - plane.airspeedKnots / FLIGHT.stallSpeedKnots;
+    const severity = 1 - plane.airspeedKnots / stallSpeed;
     targetClimb = Math.min(targetClimb, -FLIGHT.stallSinkMetersPerSecond * (0.25 + 0.75 * severity));
   }
   if (targetClimb < 0) targetClimb *= 1 - 0.15 * groundEffect(world, plane.position);
@@ -257,7 +265,7 @@ function advancePlane(plane, controls, world, dt) {
       && plane.airspeedKnots <= STOP_SPEED_KNOTS);
     if (!groundStrip && plane.airspeedKnots >= FLIGHT.takeoffSpeedKnots) {
       plane.hull = clamp(plane.hull - plane.airspeedKnots * DAMAGE.terrainImpactPerKnot,
-        0, DAMAGE.maxHull);
+        0, maxHull);
       crashPlane(plane, 'terrain impact');
     }
   } else if (world.clearance(plane.position) <= 0) {
@@ -270,8 +278,9 @@ function advancePlane(plane, controls, world, dt) {
   // The low wing/contact envelope scrapes terrain, but strips are safe to roll on.
   const scrapeHeight = FLIGHT.wingspanMeters / 10;
   if (!plane.crashed && !groundStrip && plane.agl < scrapeHeight) {
+    const scrapeMult = plane._scrapeDamageMult ?? 1.0;
     plane.hull = clamp(plane.hull - DAMAGE.terrainScrapePerSecond * dt
-      * clamp(1 - plane.agl / scrapeHeight, 0, 1), 0, DAMAGE.maxHull);
+      * clamp(1 - plane.agl / scrapeHeight, 0, 1) * scrapeMult, 0, maxHull);
     if (plane.hull === 0) crashPlane(plane, 'terrain scrape');
   }
 }

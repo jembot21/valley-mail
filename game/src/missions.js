@@ -3,34 +3,26 @@
  * Pure logic: no canvas, DOM, timers, random numbers or I/O.
  *
  * Exports:
- *   SORTIES — frozen menu data: three campaign sorties followed by Free Flight.
+ *   SORTIES — frozen menu data: five campaign sorties followed by Free Flight.
  *   FREE_FLIGHT — the endless entry in SORTIES.
- *   createSortieWorld(sortieOrId) — apply a sortie's seed, palette and ring count.
+ *   createSortieWorld(sortieOrId) — apply a sortie's seed, palette, weather, obstacles and rings.
  *   createRun(sortieOrId, world, rings = world.rings, plane?) — fresh run state.
- *   stepRun(run, plane, input, dt) — update after stepPlane using the same dt.
+ *   stepRun(run, plane, input, dt) — update flight progress, combos, and weather.
  *   finishRun(run, plane) — evaluate a terminal plane; return scoreCard or null.
- *
- * Sortie fuelLoad is a fraction of FUEL.capacity; parTimeSeconds is in seconds.
- * Create the plane, pass it to createRun, then set plane.fuel = run.startingFuel.
- * The optional plane snapshots the actual starting position/hull; without it,
- * createRun uses createPlane(world)'s departure state. Pass fresh rings on retry.
- * input.drop is a one-step press. dt is seconds of active play, excluding pause.
- *
- * Public run state: sortie, world, startingFuel, rings, ringsHit, ringsTotal,
- * ringsRemaining, nextRing, parcel, elapsedSeconds, damageTaken, score, finished
- * and scoreCard. parcel has status (none/carried/falling/hit/missed), position,
- * velocity and target. Its target uses the village dropZone, or village bounds.
- * score is the live ring/cargo subtotal; scoreCard.score is the final total.
- * Underscore fields are bookkeeping. Updates mutate and return the same run.
- *
- * Render/HUD code must read run.rings: endless batches replace that array without
- * changing frozen world data. ringsTotal counts all rings offered over the run;
- * ringsRemaining counts unpassed rings in the active batch. nextRing prefers an
- * unpassed ring ahead, falling back to a missed ring the pilot can return to.
  */
 import { SCORING, WORLD, PALETTES, FUEL } from './config.js';
 import { createWorld, createRings } from './world.js';
 import { createPlane } from './plane.js';
+import {
+  createComboTracker,
+  registerRingHit,
+  stepComboTracker,
+  calculateComboBonus,
+  evaluateRunGrade,
+} from './scoring.js';
+import { createWeatherSystem, stepWeather } from './weather.js';
+import { generateRouteObstacles, checkObstacleCollisions } from './obstacles.js';
+import { calculateSortieEarnings } from './progression.js';
 
 /** Constructs an immutable, normalized sortie definition record. */
 function buildSortieDefinition({
@@ -38,6 +30,8 @@ function buildSortieDefinition({
   name,
   briefing,
   palette = 'day',
+  routeType = 'valley',
+  weather = 'clear',
   ringCount,
   fuelLoad = 1,
   requiresParcelDrop = false,
@@ -50,6 +44,8 @@ function buildSortieDefinition({
     name,
     briefing,
     palette,
+    routeType,
+    weather,
     ringCount,
     fuelLoad,
     requiresParcelDrop,
@@ -66,6 +62,8 @@ const SORTIE_DEFINITIONS = [
     name: 'First Post',
     briefing: 'Follow five rings through the valley and land the mail at the far airstrip.',
     palette: 'day',
+    routeType: 'valley',
+    weather: 'clear',
     ringCount: 5,
     fuelLoad: 0.9,
     requiresParcelDrop: false,
@@ -78,6 +76,8 @@ const SORTIE_DEFINITIONS = [
     name: 'Cargo Drop',
     briefing: 'Drop the parcel over the village target, then land the mail at the far airstrip.',
     palette: 'day',
+    routeType: 'valley',
+    weather: 'breeze',
     ringCount: 6,
     fuelLoad: 1,
     requiresParcelDrop: true,
@@ -87,26 +87,58 @@ const SORTIE_DEFINITIONS = [
   },
   {
     id: 3,
-    name: 'Dusk Run',
-    briefing: 'Chase seven rings in the fading light and bring the mail home on a tighter tank.',
-    palette: 'dusk',
+    name: 'Gorge Navigation',
+    briefing: 'Navigate the narrow alpine gorge beneath the suspension bridge and rock arch.',
+    palette: 'day',
+    routeType: 'gorge',
+    weather: 'breeze',
     ringCount: 7,
+    fuelLoad: 0.85,
+    requiresParcelDrop: false,
+    parTimeSeconds: 250,
+    seedOffset: 1749,
+    endless: false,
+  },
+  {
+    id: 4,
+    name: 'Storm Pass',
+    briefing: 'Fly through heavy mountain squall and crosswinds; watch for the radio mast hazard.',
+    palette: 'day',
+    routeType: 'storm',
+    weather: 'storm',
+    ringCount: 8,
+    fuelLoad: 0.8,
+    requiresParcelDrop: false,
+    parTimeSeconds: 270,
+    seedOffset: 2841,
+    endless: false,
+  },
+  {
+    id: 5,
+    name: 'Dusk Run',
+    briefing: 'Chase eight rings into twilight and bring the mail home on a tight fuel reserve.',
+    palette: 'dusk',
+    routeType: 'valley',
+    weather: 'dusk_mist',
+    ringCount: 8,
     fuelLoad: 0.6,
     requiresParcelDrop: false,
-    parTimeSeconds: 240,
-    seedOffset: 2207,
+    parTimeSeconds: 260,
+    seedOffset: 3412,
     endless: false,
   },
   {
     id: 'free',
     name: 'Free Flight',
-    briefing: 'Explore at your own pace; fresh rings keep appearing down the valley.',
+    briefing: 'Explore at your own pace; fresh rings and terrain keep appearing down the valley.',
     palette: 'day',
+    routeType: 'valley',
+    weather: 'clear',
     ringCount: 6,
     fuelLoad: 1,
     requiresParcelDrop: false,
     parTimeSeconds: 0,
-    seedOffset: 3301,
+    seedOffset: 4107,
     endless: true,
   },
 ];
@@ -124,13 +156,21 @@ function resolveSortie(sortieOrId) {
   return sortie;
 }
 
-/** Build a deterministic valley; callers may instead supply their own world. */
+/** Build a deterministic valley with weather and route obstacles. */
 export function createSortieWorld(sortieOrId) {
   const sortie = resolveSortie(sortieOrId);
-  return createWorld({
+  const baseWorld = createWorld({
     seed: WORLD.seed + sortie.seedOffset,
     ringCount: sortie.ringCount,
     palette: sortie.palette,
+  });
+  const weather = createWeatherSystem(sortie.weather, baseWorld.seed);
+  const obstacles = generateRouteObstacles(baseWorld, sortie.routeType, baseWorld.seed);
+  return Object.freeze({
+    ...baseWorld,
+    weather,
+    obstacles,
+    routeType: sortie.routeType,
   });
 }
 
@@ -140,9 +180,14 @@ export function createRun(sortieOrId, world, rings = world.rings, plane = create
   const activeRings = [...rings].sort((a, b) => a.position.z - b.position.z);
   const ringsHit = activeRings.filter((ring) => ring.passed).length;
   const unpassed = activeRings.filter((ring) => !ring.passed);
+  const combo = createComboTracker();
+
   return {
     sortie,
     world,
+    weather: world.weather ?? createWeatherSystem(sortie.weather, world.seed),
+    obstacles: world.obstacles ?? generateRouteObstacles(world, sortie.routeType, world.seed),
+    combo,
     startingFuel: FUEL.capacity * sortie.fuelLoad,
     rings: activeRings,
     ringsHit,
@@ -167,27 +212,29 @@ export function createRun(sortieOrId, world, rings = world.rings, plane = create
   };
 }
 
-
 const GRAVITY_METERS_PER_SECOND_SQUARED = 9.81;
 const PARCEL_STEP_SECONDS = 1 / 60;
 const KNOTS_TO_METERS_PER_SECOND = 1852 / 3600;
 
 function threadRings(run, from, to) {
   const dz = to.z - from.z;
-  if (dz === 0) return;
+  if (dz === 0) return 0;
+  let newlyPassed = 0;
   for (const ring of run.rings) {
     if (ring.passed) continue;
     const t = (ring.position.z - from.z) / dz;
-    // Exclude the starting plane: arriving exactly on a ring counted last step.
-    // Both travel directions count, but a ring can award its bonus only once.
     if (t <= 0 || t > 1) continue;
     const dx = from.x + (to.x - from.x) * t - ring.position.x;
     const dy = from.y + (to.y - from.y) * t - ring.position.y;
     if (dx * dx + dy * dy <= ring.radius * ring.radius) {
       ring.passed = true;
       run.ringsHit += 1;
+      newlyPassed += 1;
+      registerRingHit(run.combo);
+      run.score += calculateComboBonus(run.combo, SCORING.ringBonus);
     }
   }
+  return newlyPassed;
 }
 
 function updateRingTargets(run, position) {
@@ -208,9 +255,6 @@ function respawnRings(run, position) {
   const originZ = templates[0].position.z;
   run._ringBatch += 1;
 
-  // createRings describes the original route. Translate fresh copies ahead,
-  // following the river and retaining each ring's original terrain clearance.
-  // Never rewrite a frozen world ring, its position, or its feature bounds.
   run.rings = templates.map((ring, index) => {
     const z = firstZ + ring.position.z - originZ;
     const x = run.world.riverCenter(z)
@@ -246,8 +290,6 @@ function insideDropZone(position, zone) {
     && Number.isFinite(center?.x) && Number.isFinite(center?.z)) {
     return (position.x - center.x) ** 2 + (position.z - center.z) ** 2 <= radius ** 2;
   }
-  // The documented village feature has horizontal bounds. An explicit zone
-  // may supply either those bounds directly or a position/radius circle.
   const bounds = zone?.bounds ?? zone;
   return Boolean(bounds && position.x >= bounds.minX && position.x <= bounds.maxX
     && position.z >= bounds.minZ && position.z <= bounds.maxZ);
@@ -291,8 +333,6 @@ function advanceParcel(run, dt) {
     parcel.velocity.y = vy - GRAVITY_METERS_PER_SECOND_SQUARED * stepDt;
     if (run.world.clearance(parcel.position) > 0) continue;
 
-    // Find the first ground contact within this small step, so a target-edge
-    // hit is judged at impact rather than after the parcel has overshot it.
     let low = 0;
     let high = stepDt;
     for (let search = 0; search < 20; search += 1) {
@@ -307,19 +347,32 @@ function advanceParcel(run, dt) {
 
 function updateSubtotal(run, plane) {
   run.damageTaken = Math.max(run.damageTaken, run._startingHull - plane.hull, 0);
-  run.score = run.ringsHit * SCORING.ringBonus
-    + (run.parcel.status === 'hit' ? SCORING.cargoDeliveryBonus : 0);
+  const cargoBonus = run.parcel.status === 'hit'
+    ? Math.round(SCORING.cargoDeliveryBonus * (plane._cargoDropBonusMult ?? 1))
+    : 0;
+  run.score = Math.max(run.score, run.ringsHit * SCORING.ringBonus + cargoBonus);
 }
 
-/**
- * Track the movement made by stepPlane. Invalid/nonpositive dt and finished
- * runs are no-ops. A reported drop releases at the current (post-flight) position;
- * its fall begins on the next update, avoiding a fictitious full dt of travel.
- */
+/** Track simulation movement and update weather, obstacles, and combos. */
 export function stepRun(run, plane, input, dt) {
   if (run.finished || !Number.isFinite(dt) || dt <= 0) return run;
   run.elapsedSeconds += dt;
+
+  stepWeather(run.weather, plane, dt);
+  stepComboTracker(run.combo, dt);
+
+  // Check obstacle collisions
+  const hazard = checkObstacleCollisions(plane, run.obstacles);
+  if (hazard && hazard.hit) {
+    plane.hull = Math.max(0, plane.hull - 35);
+    plane.crashReason = hazard.message;
+    if (plane.hull <= 0) {
+      plane.crashed = true;
+    }
+  }
+
   threadRings(run, run._previousPosition, plane.position);
+
   if (run.parcel.status === 'falling') {
     advanceParcel(run, dt);
   } else if (run.parcel.status === 'carried') {
@@ -336,16 +389,6 @@ export function stepRun(run, plane, input, dt) {
   return run;
 }
 
-/**
- * Freeze one score card on landing/crash (or zero hull), otherwise return null.
- * Rings are optional bonuses. Delivery requires the destination and, for sortie
- * 2, a parcel hit. Incomplete campaign landings use the failure outcome 'crashed'
- * with an explanatory reason; no extra outcome is needed by the result screen.
- * Fuel exhaustion alone does not end an airborne run: a glide can still deliver.
- * Endless flight can stop and take off again while fuel remains, without a win.
- * Scores retain full precision; screens may round them for display.
- */
-/** Determine the terminal outcome and explanatory reason for an ended run. */
 function determineRunOutcome(run, plane) {
   const destroyed = plane.hull <= 0;
   const empty = plane.fuel <= FUEL.empty;
@@ -384,19 +427,20 @@ function determineRunOutcome(run, plane) {
   };
 }
 
-/** Tally the final score card for a finished run. */
 function buildScoreCard(run, plane, { outcome, reason }) {
   updateSubtotal(run, plane);
   const destroyed = plane.hull <= 0;
   const safeLanding = plane.landed && !plane.crashed && !destroyed;
-  // Use the grade recorded at touchdown, not the now-level plane on the runway.
   const grade = safeLanding
     ? SCORING.landingGrades.find((entry) => entry.id === plane.landingGrade) : null;
   const landingBonus = safeLanding ? (grade?.bonus ?? plane.landingBonus ?? 0) : 0;
   const timeBonus = Math.max(0, run.sortie.parTimeSeconds - run.elapsedSeconds)
     * SCORING.timeBonusPerSecondRemaining;
+  const mailBonus = outcome === 'delivered' ? SCORING.mailDeliveryBonus : 0;
+  const damagePenalty = run.damageTaken * SCORING.damagePenaltyPerPoint;
+  const totalScore = Math.max(0, run.score + mailBonus + landingBonus + timeBonus - damagePenalty);
 
-  return Object.freeze({
+  const partialCard = {
     outcome,
     reason,
     ringsHit: run.ringsHit,
@@ -405,8 +449,21 @@ function buildScoreCard(run, plane, { outcome, reason }) {
     landingGrade: safeLanding ? plane.landingGrade : null,
     landingLabel: safeLanding ? (plane.landingLabel ?? grade?.label ?? null) : null,
     damageTaken: run.damageTaken,
-    score: run.score + (outcome === 'delivered' ? SCORING.mailDeliveryBonus : 0)
-      + landingBonus + timeBonus - run.damageTaken * SCORING.damagePenaltyPerPoint,
+    score: totalScore,
+    totalScore,
+    maxStreak: run.combo.maxStreak,
+  };
+
+  const rankReview = evaluateRunGrade(run, plane, partialCard);
+  const earnings = calculateSortieEarnings(partialCard, run.sortie, run.combo.maxStreak);
+
+  return Object.freeze({
+    ...partialCard,
+    grade: rankReview.grade,
+    gradeTitle: rankReview.title,
+    gradeColor: rankReview.color,
+    gradeSummary: rankReview.summary,
+    creditsEarned: earnings,
   });
 }
 
